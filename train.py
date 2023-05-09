@@ -3,9 +3,9 @@ import gym
 from Agent import Agent
 
 env = gym.make("LunarLander-v2")
-agent = Agent(8, 4)
-agent.NN.load_state_dict(T.load("model"))
-epochs = 500
+agent = Agent(8, 4, epsilon=0.5)
+agent.NN.load_state_dict(T.load("model_with_target2"))
+epochs = 1000
 for i in range(epochs):
     score = 0
     done = False
@@ -21,4 +21,4 @@ for i in range(epochs):
     if i % 100 == 0:
         print(i, ": ", score)
 
-T.save(agent.NN.state_dict(), "model")
+T.save(agent.NN.state_dict(), "model_with_target2")

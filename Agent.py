@@ -15,6 +15,7 @@ class Agent:
         epsilon_min=0.01,
         epsilon_decrement=1e-3,
         batch_size=64,
+        target_network_update_interval=2000,
     ):
         self.input_features = input_features
         self.no_actions = no_actions
@@ -27,6 +28,7 @@ class Agent:
         self.batch_size = batch_size
         self.can_learn = False
         self.filled_memory = 0
+        self.target_network_update_interval = target_network_update_interval
 
         self.NN = DeepQ(
             self.input_features,
@@ -35,6 +37,17 @@ class Agent:
             no_actions,
             self.lr,
         )
+
+        self.target_Network = DeepQ(
+            self.input_features,
+            self.input_features * 2,
+            self.input_features * 2,
+            no_actions,
+            self.lr,
+        )
+        self.target_Network.load_state_dict(
+            self.NN.state_dict()
+        )  # make sure they have the same weights at the beginning
 
         self.last_memory_idx = 0
         self.state_memory = np.zeros(
@@ -45,10 +58,12 @@ class Agent:
         )
         self.chosen_action_memory = np.zeros(self.replay_memory_size, dtype=np.int32)
         self.reward_memory = np.zeros(self.replay_memory_size, dtype=np.float32)
-        self.is_done_memory = np.zeros(self.replay_memory_size, dtype=bool)
+        self.is_done_memory = np.zeros(self.replay_memory_size, dtype=np.bool_)
 
     def save_state_action(self, state, action, new_state, reward, is_done):
         idx = self.last_memory_idx
+        if idx % self.target_network_update_interval == 0:
+            self.target_Network.load_state_dict(self.NN.state_dict())
         self.state_memory[idx] = state
         self.new_state_memory[idx] = new_state
         self.chosen_action_memory[idx] = action
@@ -103,7 +118,7 @@ class Agent:
         actions_values = self.NN.forward(state_batch)[
             np.arange(self.batch_size, dtype=np.int64), chosen_action_batch
         ]
-        actions_from_new_state = self.NN.forward(new_state_batch)
+        actions_from_new_state = self.target_Network.forward(new_state_batch)
         actions_from_new_state[is_done_batch] = 0.0
 
         expected_value = (
