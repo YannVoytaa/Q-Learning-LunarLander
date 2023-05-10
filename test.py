@@ -3,10 +3,9 @@ import gym
 from Agent import Agent
 
 env = gym.make("LunarLander-v2", render_mode="human")
-agent = Agent(8, 4, lr=0.0, epsilon=0.0, epsilon_decrement=0.0, epsilon_min=0.0)
-nn_state = T.load("model_with_target2")
-agent.NN.load_state_dict(nn_state)
-agent.target_Network.load_state_dict(nn_state)
+agent = Agent(8, 4)
+nn_state = T.load("model_policy_gradient2")
+agent.policy.load_state_dict(nn_state)
 iters = 500
 for i in range(iters):
     score = 0

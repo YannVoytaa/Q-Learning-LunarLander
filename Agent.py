@@ -1,5 +1,5 @@
 import numpy as np
-from Network import DeepQ
+from PolicyNetwork import PolicyNetwork
 import torch as T
 
 
@@ -9,131 +9,78 @@ class Agent:
         input_features,
         no_actions,
         gamma=0.99,
-        epsilon=1.0,
         lr=0.001,
         replay_memory_size=100000,
-        epsilon_min=0.01,
-        epsilon_decrement=1e-3,
-        batch_size=64,
-        target_network_update_interval=2000,
     ):
         self.input_features = input_features
         self.no_actions = no_actions
         self.gamma = gamma
-        self.epsilon = epsilon
         self.lr = lr
         self.replay_memory_size = replay_memory_size
-        self.epsilon_min = epsilon_min
-        self.epsilon_decrement = epsilon_decrement
-        self.batch_size = batch_size
-        self.can_learn = False
         self.filled_memory = 0
-        self.target_network_update_interval = target_network_update_interval
+        self.actions = [i for i in range(no_actions)]
+        hidden_features = self.input_features**2
+        hidden_features2 = self.input_features**2
 
-        self.NN = DeepQ(
-            self.input_features,
-            self.input_features * 2,
-            self.input_features * 2,
-            no_actions,
-            self.lr,
-        )
-
-        self.target_Network = DeepQ(
-            self.input_features,
-            self.input_features * 2,
-            self.input_features * 2,
-            no_actions,
-            self.lr,
-        )
-        self.target_Network.load_state_dict(
-            self.NN.state_dict()
-        )  # make sure they have the same weights at the beginning
-
-        self.last_memory_idx = 0
         self.state_memory = np.zeros(
-            (self.replay_memory_size, input_features), dtype=np.float32
-        )
-        self.new_state_memory = np.zeros(
             (self.replay_memory_size, input_features), dtype=np.float32
         )
         self.chosen_action_memory = np.zeros(self.replay_memory_size, dtype=np.int32)
         self.reward_memory = np.zeros(self.replay_memory_size, dtype=np.float32)
-        self.is_done_memory = np.zeros(self.replay_memory_size, dtype=np.bool_)
 
-    def save_state_action(self, state, action, new_state, reward, is_done):
-        idx = self.last_memory_idx
-        if idx % self.target_network_update_interval == 0:
-            self.target_Network.load_state_dict(self.NN.state_dict())
+        self.policy = PolicyNetwork(
+            input_features, hidden_features, hidden_features2, no_actions, lr
+        )
+
+    def save_state_action(self, state, action, reward):
+        if self.filled_memory >= self.replay_memory_size:
+            return
+        idx = self.filled_memory
         self.state_memory[idx] = state
-        self.new_state_memory[idx] = new_state
         self.chosen_action_memory[idx] = action
         self.reward_memory[idx] = reward
-        self.is_done_memory[idx] = is_done
 
-        self.last_memory_idx = (idx + 1) % self.replay_memory_size
-        self.can_learn = self.can_learn or self.last_memory_idx >= self.batch_size
-        self.filled_memory = (
-            self.filled_memory + 1
-            if self.filled_memory < self.replay_memory_size
-            else self.filled_memory
-        )
+        self.filled_memory += 1
 
     def predict(self, state):
-        if np.random.random() > self.epsilon:
-            actions = self.NN.forward(T.tensor(state))
-            best_action = T.argmax(actions).item()
-            return best_action
-        return np.random.randint(self.no_actions)
-
-    def sample_batch(self):
-        batch = np.random.choice(self.filled_memory, self.batch_size, replace=False)
-
-        state_batch = T.tensor(self.state_memory[batch])
-        new_state_batch = T.tensor(self.new_state_memory[batch])
-        chosen_action_batch = T.tensor(self.chosen_action_memory[batch], dtype=T.int64)
-        reward_batch = T.tensor(self.reward_memory[batch])
-        is_done_batch = T.tensor(self.is_done_memory[batch])
-        return (
-            state_batch,
-            new_state_batch,
-            chosen_action_batch,
-            reward_batch,
-            is_done_batch,
-        )
+        probs = self.policy.forward(T.tensor(state, requires_grad=False))
+        action = probs.multinomial(num_samples=1).item()
+        return action
 
     def learn(self):
-        if not self.can_learn:
-            return
+        actions = np.zeros([self.filled_memory, self.no_actions])
+        idxs = np.arange(self.filled_memory)
+        actions[idxs, self.chosen_action_memory[idxs]] = 1
 
-        self.NN.optimizer.zero_grad()
+        # discounts = self.gamma ** np.arange(self.filled_memory)
+        # returns = np.cumsum(
+        #    self.reward_memory[: self.filled_memory] * discounts, axis=0
+        # )
+        # G = (returns - np.mean(returns)) / (np.std(returns) + 1e-8)
 
-        (
-            state_batch,
-            new_state_batch,
-            chosen_action_batch,
-            reward_batch,
-            is_done_batch,
-        ) = self.sample_batch()
+        G = np.zeros_like(self.reward_memory[idxs])
+        for t in range(self.filled_memory):
+            G_sum = 0
+            discount = 1
+            for k in range(t, self.filled_memory):
+                G_sum += self.reward_memory[k] * discount
+                discount *= self.gamma
 
-        actions_values = self.NN.forward(state_batch)[
-            np.arange(self.batch_size, dtype=np.int64), chosen_action_batch
-        ]
-        actions_from_new_state = self.target_Network.forward(new_state_batch)
-        actions_from_new_state[is_done_batch] = 0.0
+            G[t] = G_sum
+        mean = np.mean(G)
+        std = np.std(G) if np.std(G) > 0 else 1
+        G = (G - mean) / std
 
-        expected_value = (
-            reward_batch + self.gamma * T.max(actions_from_new_state, dim=1)[0]
+        self.policy.zero_grad()
+        y_pred = self.policy.forward(T.tensor(self.state_memory[idxs]))
+        y_true = T.tensor(actions[idxs])
+        loss = -T.mean(
+            y_true
+            * T.log(T.clip(y_pred, 1e-8, 1 - 1e-8))
+            * T.tensor(G).view(G.shape[0], 1)
         )
 
-        loss = self.NN.loss(expected_value, actions_values)
         loss.backward()
-        self.NN.optimizer.step()
+        self.policy.optimizer.step()
 
-        self.decrease_epsilon()
-
-    def decrease_epsilon(self):
-        self.epsilon = (
-            self.epsilon - self.epsilon_decrement
-            if self.epsilon > self.epsilon_min
-            else self.epsilon_min
-        )
+        self.filled_memory = 0
