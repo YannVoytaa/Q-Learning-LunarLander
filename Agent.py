@@ -1,5 +1,5 @@
 import numpy as np
-from PolicyNetwork import PolicyNetwork
+from ActorCriticNetwork import ActorCriticNetwork
 import torch as T
 
 
@@ -10,77 +10,58 @@ class Agent:
         no_actions,
         gamma=0.99,
         lr=0.001,
-        replay_memory_size=100000,
     ):
         self.input_features = input_features
         self.no_actions = no_actions
         self.gamma = gamma
         self.lr = lr
-        self.replay_memory_size = replay_memory_size
-        self.filled_memory = 0
-        self.actions = [i for i in range(no_actions)]
         hidden_features = self.input_features**2
         hidden_features2 = self.input_features**2
 
-        self.state_memory = np.zeros(
-            (self.replay_memory_size, input_features), dtype=np.float32
-        )
-        self.chosen_action_memory = np.zeros(self.replay_memory_size, dtype=np.int32)
-        self.reward_memory = np.zeros(self.replay_memory_size, dtype=np.float32)
+        self.state_memory = []
+        self.chosen_action_memory = []
+        self.reward_memory = []
 
-        self.policy = PolicyNetwork(
+        self.actor_critic = ActorCriticNetwork(
             input_features, hidden_features, hidden_features2, no_actions, lr
         )
 
     def save_state_action(self, state, action, reward):
-        if self.filled_memory >= self.replay_memory_size:
-            return
-        idx = self.filled_memory
-        self.state_memory[idx] = state
-        self.chosen_action_memory[idx] = action
-        self.reward_memory[idx] = reward
-
-        self.filled_memory += 1
+        self.state_memory.append(state)
+        self.chosen_action_memory.append(action)
+        self.reward_memory.append(reward)
 
     def predict(self, state):
-        probs = self.policy.forward(T.tensor(state, requires_grad=False))
+        probs, _ = self.actor_critic.forward(T.tensor(state))
         action = probs.multinomial(num_samples=1).item()
         return action
 
     def learn(self):
-        actions = np.zeros([self.filled_memory, self.no_actions])
-        idxs = np.arange(self.filled_memory)
-        actions[idxs, self.chosen_action_memory[idxs]] = 1
+        state_memory = np.array(self.state_memory)
+        chosen_action_memory = np.array(self.chosen_action_memory)
+        reward_memory = np.array(self.reward_memory)
+        filled_memory = len(reward_memory)
+        idxs = np.arange(filled_memory)
 
-        # discounts = self.gamma ** np.arange(self.filled_memory)
-        # returns = np.cumsum(
-        #    self.reward_memory[: self.filled_memory] * discounts, axis=0
-        # )
-        # G = (returns - np.mean(returns)) / (np.std(returns) + 1e-8)
+        probs, values = self.actor_critic.forward(T.tensor(state_memory))
+        probs = probs[idxs, chosen_action_memory]
+        G = np.zeros_like(reward_memory)
+        policy_loss = np.zeros_like(reward_memory)
+        value_loss = np.zeros_like(reward_memory)
+        for t in range(filled_memory - 2, -1, -1):
+            G[t] = reward_memory[t] + self.gamma * G[t + 1]
+        G = T.tensor(G)
+        advantages = G - values.view(-1)
+        policy_loss = -T.log(probs.clamp(min=1e-8, max=1 - 1e-8)).view(-1) * advantages
+        value_loss = advantages**2
 
-        G = np.zeros_like(self.reward_memory[idxs])
-        for t in range(self.filled_memory):
-            G_sum = 0
-            discount = 1
-            for k in range(t, self.filled_memory):
-                G_sum += self.reward_memory[k] * discount
-                discount *= self.gamma
+        loss = T.mean(policy_loss + value_loss)
 
-            G[t] = G_sum
-        mean = np.mean(G)
-        std = np.std(G) if np.std(G) > 0 else 1
-        G = (G - mean) / std
-
-        self.policy.zero_grad()
-        y_pred = self.policy.forward(T.tensor(self.state_memory[idxs]))
-        y_true = T.tensor(actions[idxs])
-        loss = -T.mean(
-            y_true
-            * T.log(T.clip(y_pred, 1e-8, 1 - 1e-8))
-            * T.tensor(G).view(G.shape[0], 1)
-        )
-
+        self.actor_critic.zero_grad()
         loss.backward()
-        self.policy.optimizer.step()
+        self.actor_critic.optimizer.step()
 
-        self.filled_memory = 0
+        # Clear memory lists
+        self.state_memory.clear()
+        self.chosen_action_memory.clear()
+        self.reward_memory.clear()

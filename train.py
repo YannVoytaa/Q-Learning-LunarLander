@@ -3,8 +3,8 @@ import gym
 from Agent import Agent
 
 env = gym.make("LunarLander-v2")
-agent = Agent(8, 4, lr=0.005)
-agent.policy.load_state_dict(T.load("model_policy_gradient2"))
+agent = Agent(8, 4)
+agent.actor_critic.load_state_dict(T.load("model_policy_value"))
 epochs = 10000
 scores = []
 for i in range(epochs):
@@ -25,7 +25,7 @@ for i in range(epochs):
         scores = []
         print(i, ": ", score)
     if i % 1000 == 0:
-        T.save(agent.policy.state_dict(), "model_policy_gradient2")
+        T.save(agent.actor_critic.state_dict(), "model_policy_value")
 
 
-T.save(agent.policy.state_dict(), "model_policy_gradient2")
+T.save(agent.actor_critic.state_dict(), "model_policy_value")

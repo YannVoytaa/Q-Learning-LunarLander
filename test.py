@@ -4,8 +4,8 @@ from Agent import Agent
 
 env = gym.make("LunarLander-v2", render_mode="human")
 agent = Agent(8, 4)
-nn_state = T.load("model_policy_gradient2")
-agent.policy.load_state_dict(nn_state)
+nn_state = T.load("model_policy_value")
+agent.actor_critic.load_state_dict(nn_state)
 iters = 500
 for i in range(iters):
     score = 0
